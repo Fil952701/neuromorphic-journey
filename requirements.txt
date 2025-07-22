@@ -1,0 +1,7 @@
+brian2
+matplotlib
+numpy
+jupyter
+tensorflow
+pandas
+pytorch
