@@ -4,4 +4,8 @@ numpy
 jupyter
 tensorflow
 pandas
+random
+sys
+math
 pytorch
+pygame
