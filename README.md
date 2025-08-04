@@ -23,21 +23,13 @@ Fundamentals: LIF neuron, spike encodings, Brian2 setup.
 STDP (pair-based, triplet, homeostasis) in Brian2. Toy pattern-recognition task.
 
 **Weeks 6–8**  
-Training SNNs with surrogate gradients (Norse/SpikingJelly) on NMNIST/SHD or DVS Gesture. Compare direct training vs ANN→SNN conversion.
+Training SNNs with surrogate gradients (Norse/SpikingJelly) on NMNIST/SHD or DVS Gesture. Compare direct training vs ANN→SNN conversion. Building some SNNs and STDP projects.
 
 **Weeks 9–10**  
 Touch hardware/SDK side: Intel Lava (Loihi simulator), SpiNNaker toolchain (if accessible). Write a tutorial-style demo.
 
 **Weeks 11–12**  
 Packaging & visibility: blog post, README polishing, small video demos. Start contacting labs/companies for internships or contracts.
-
-## Log settimanale
-### Week 1
-- **Day 1**: setup environment, repo, LIF neuron with Poisson input (Brian2)
-- **Day 2**: 2 neurons + synapse, parameter sweep
-- **Day 3**: plan STDP implementation, start coding pair-based rule
-
-_(Si aggiorna ogni settimana)_
 
 ## Struttura repo
 - `notebooks/`: experiments, demo e visualizations
@@ -46,7 +38,7 @@ _(Si aggiorna ogni settimana)_
 - `docs/`: notes, roadmap, paper list
 
 ## Requisiti
-Vedi `requirements.txt`.
+View `requirements.txt`.
 
 ## Licenza
 MIT
