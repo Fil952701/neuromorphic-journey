@@ -1,4 +1,4 @@
-# SNN with STDP + eligibility trace to simulate an artificial tongue 
+# SNN with STDP + eligibility trace to simulate an artificial tongue
 # that continuously learns to recognize multiple tastes (always-on).
 
 import brian2 as b
@@ -84,7 +84,7 @@ Vth                  = -52 * b.mV
 Vreset               = -60 * b.mV
 
 # Synaptic reversal & time constants
-Ee                   = 0*b.mV 
+Ee                   = 0*b.mV
 Ei                   = -80*b.mV
 taue                 = 10*b.ms
 taui                 = 10*b.ms
@@ -92,7 +92,7 @@ taui                 = 10*b.ms
 # Size of conductance kick per spike (scaling)
 g_step_exc           = 3.5 * b.nS       # excitation from inputs
 g_step_bg            = 0.3 * b.nS       # tiny background excitation
-g_step_inh           = 1.7 * b.nS       # lateral inhibition strength
+g_step_inh           = 1.5 * b.nS       # lateral inhibition strength
 
 # Intrinsic homeostasis adapative threshold parameters
 target_rate          = 50 * b.Hz        # reference firing per neuron (tu 40-80 Hz rule)
@@ -102,7 +102,7 @@ theta_init           = 0.0 *b.mV        # starting theta
 rho_target = target_rate * tau_rate     # dimensionless (Hz*s)
 
 # Decoder threshold parameters
-k_sigma              = 1.8              # ↑ if it is too weak
+k_sigma              = 1.6              # ↑ if it is too weak
 q_neg                = 0.99             # negative quantile
 
 # Multi-label RL + EMA decoder
@@ -110,7 +110,21 @@ ema_lambda           = 0.05             # 0 < λ ≤ 1
 tp_gate_ratio        = 0.50             # threshold to reward winner classes
 fp_gate_warmup_steps = 20               # delay punitions to loser classes if EMA didn't stabilize them yet
 decoder_adapt_on_test = False           # updating decoder EMA in test phase
-ema_factor           = 0.5              # EMA factor to punish more easy samples  
+ema_factor           = 0.5              # EMA factor to punish more easy samples
+
+# Off-diag hyperparameters
+beta = 0.03                             # learning rate for negative reward
+beta_offdiag = 0.5 * beta               # off-diag parameter
+use_offdiag_dopamine = True             # quick toggle
+
+# normalizzazione per-colonna (synaptic scaling in ingresso)
+use_col_norm         = True             # abilita la normalizzazione
+col_norm_mode        = "l1"             # "l1" (somma=target) oppure "softmax"
+col_norm_every       = 1                # esegui ogni N trial
+col_norm_temp        = 1.0              # temperatura softmax (se mode="softmax")
+col_norm_target      = None             # se None, lo stimiamo all’avvio training
+diag_bias_gamma      = 1.10             # >1.0 = leggero bias al peso diagonale prima del norm
+col_floor            = 0.0              # pavimento (0 o piccola epsilon) prima del norm
 
 # STDP parameters
 tau                  = 30 * b.ms        # STDP time constant
@@ -118,7 +132,6 @@ Te                   = 50 * b.ms        # eligibility trace decay time constant
 A_plus               = 0.01             # dimensionless
 A_minus              = -0.012           # dimensionless
 alpha                = 0.1              # learning rate for positive reward
-beta                 = 0.02             # learning rate for negative reward
 noise_mu             = 5                # noise mu constant
 noise_sigma          = 0.8              # noise sigma constant
 inhib_amp            = 0.1              # lateral inhibition constant
@@ -135,7 +148,7 @@ weight_decay         = 1e-4             # weight decay for trial
 verbose_rewards      = False            # dopamine reward logs
 
 # Connectivity switch: "diagonal" | "dense"
-connectivity_mode = "diagonal"  # change to "dense" to connect all synapses in fully connected way
+connectivity_mode = "dense"  # change to "dense" to connect all synapses in fully connected way
 
 # 4. LIF conductance-based output taste neurons with intrinsic homeostatis
 taste_neurons = b.NeuronGroup(
@@ -214,14 +227,22 @@ else:  # dense
     S.connect('i != unknown_id') # fully-connected
 
 # init weights
-S.w = '0.2 + 0.8*rand()'
+if connectivity_mode == "dense":
+    # initial advantage for true connections, minimal cross-talk
+    S.w['i==j'] = '0.30 + 0.20*rand()'  # 0.30–0.50 value
+    S.w['i!=j'] = '0.02 + 0.04*rand()'  # 0.02–0.06 value
+else:
+    S.w = '0.2 + 0.8*rand()'
 
 # Diagonal synapses index
-diag_idx = {}
-for k in range(num_tastes-1):
-    idxs = np.where((S.i == k) & (S.j == k))[0]
-    if len(idxs) >= 1:
-        diag_idx[k] = int(idxs[0])
+ij_to_si = {}
+Si = np.array(S.i[:], dtype=int)
+Sj = np.array(S.j[:], dtype=int)
+for k in range(len(Si)):
+    ij_to_si[(int(Si[k]), int(Sj[k]))] = int(k)
+
+# Available diagonal index in 'diagonal' che in 'dense')
+diag_idx = {k: ij_to_si[(k, k)] for k in range(num_tastes-1) if (k, k) in ij_to_si}
 
 # Background synapses (ambient excitation)
 S_noise = b.Synapses(pg_noise, taste_neurons, on_pre='ge_post += g_step_bg',
@@ -229,8 +250,8 @@ S_noise = b.Synapses(pg_noise, taste_neurons, on_pre='ge_post += g_step_bg',
 S_noise.connect('i == j and i != unknown_id')
 
 # Lateral inhibition for WTA (Winner-Take-All)
-inhibitory_S = b.Synapses(taste_neurons, 
-                    taste_neurons, 
+inhibitory_S = b.Synapses(taste_neurons,
+                    taste_neurons,
                     on_pre='gi_post += g_step_inh',
                     delay=0.2*b.ms,
                     namespace=dict(g_step_inh=g_step_inh))
@@ -241,13 +262,13 @@ weight_monitors.append((w_mon, S))
 
 # 8. Building the SNN network and adding levels
 net = b.Network(
-    taste_neurons, 
+    taste_neurons,
     pg,
     pg_noise, # imput neurons noise introduced
     S,
     S_noise,
     inhibitory_S,
-    spike_mon, 
+    spike_mon,
     state_mon
 )
 net.add(w_mon)
@@ -287,12 +308,12 @@ training_stimuli = pure_train + mixture_train
 random.shuffle(training_stimuli) # continually randomize the stimuli without adapting patterns
 
 # decoder parameters initialization
-pos_counts = {i: [] for i in range(num_tastes-1)}
-neg_counts = {i: [] for i in range(num_tastes-1)}
+pos_counts = {idx: [] for idx in range(num_tastes-1)}
+neg_counts = {idx: [] for idx in range(num_tastes-1)}
 ema_neg_m1 = np.zeros(num_tastes-1)  # E[x]
 ema_neg_m2 = np.zeros(num_tastes-1)  # E[x^2]
 ema_pos_m1 = np.zeros(num_tastes-1)
-ema_pos_m2 = np.zeros(num_tastes-1) 
+ema_pos_m2 = np.zeros(num_tastes-1)
 
 # 10. Main "always-on" loop
 print("\nStarting TRAINING phase...")
@@ -304,6 +325,17 @@ taste_neurons.v[:] = EL
 step = 0
 total_steps = len(training_stimuli) # pure + mixture
 
+# stima del col_norm_target se serve
+if use_col_norm and connectivity_mode == "dense" and col_norm_target is None:
+    # fan-in atteso: tutti i presinaptici eccetto UNKNOWN
+    fanin = (num_tastes - 1)
+    init_mean = float(np.mean(S.w[:])) if len(S.w[:]) > 0 else 0.5
+    col_norm_target = init_mean * fanin
+    # clamp del target
+    col_norm_target = float(np.clip(col_norm_target, 0.5*fanin*0.2, 1.5*fanin*0.8))
+    if verbose_rewards:
+        print(f"col_norm_target auto={col_norm_target:.3f} (fanin={fanin}, init_mean={init_mean:.3f})")
+
 for input_rates, true_ids, label in training_stimuli:
     step += 1
     frac   = step / total_steps
@@ -314,7 +346,7 @@ for input_rates, true_ids, label in training_stimuli:
         msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} | {reaction}")
     else:
         msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} (mixture)")
-    sys.stdout.write(msg); 
+    sys.stdout.write(msg);
     sys.stdout.flush()
 
     # 1) training stimulus with masking on no target neurons
@@ -327,96 +359,155 @@ for input_rates, true_ids, label in training_stimuli:
     net.run(training_duration)
     diff_counts = spike_mon.count[:] - prev_counts
     # collect all positive and negative counts
-    for i in range(num_tastes-1):
-        if i in true_ids:
-            pos_counts[i].append(int(diff_counts[i]))
+    for idx in range(num_tastes-1):
+        if idx in true_ids:
+            pos_counts[idx].append(int(diff_counts[idx]))
         else:
-            neg_counts[i].append(int(diff_counts[i]))
+            neg_counts[idx].append(int(diff_counts[idx]))
     # updating EMA decoder parameters during online training
-    for i in range(num_tastes-1):
-        if i in true_ids:
-            ema_pos_m1[i], ema_pos_m2[i] = ema_update(ema_pos_m1[i], ema_pos_m2[i],
-                                                      float(diff_counts[i]), ema_lambda)
+    for idx in range(num_tastes-1):
+        if idx in true_ids:
+            ema_pos_m1[idx], ema_pos_m2[idx] = ema_update(ema_pos_m1[idx], ema_pos_m2[idx],
+                                                      float(diff_counts[idx]), ema_lambda)
         else:
-            ema_neg_m1[i], ema_neg_m2[i] = ema_update(ema_neg_m1[i], ema_neg_m2[i],
-                                                      float(diff_counts[i]), ema_lambda)
-            
+            ema_neg_m1[idx], ema_neg_m2[idx] = ema_update(ema_neg_m1[idx], ema_neg_m2[idx],                                               float(diff_counts[idx]), ema_lambda)
+
     if diff_counts.max() <= 0:
         print("\nThere's no computed spike, skipping rewarding phase...")
         S.elig[:] = 0
         net.run(pause_duration)
         continue
 
-    # 3) "over-threshold" winners except for UNKNOWN
+    # A3: soglie TP/FP per ogni classe
     scores = diff_counts.astype(float)
     scores[unknown_id] = -1e9
     mx = scores.max()
+    rel = threshold_ratio * mx
+
+    tp_gate = np.zeros(num_tastes-1, dtype=float)
+    fp_gate = np.zeros(num_tastes-1, dtype=float)
+
+    for idx in range(num_tastes-1):
+       # fondo (negativo) -> soglia FP conservativa via EMA
+       neg_mu_i = float(ema_neg_m1[idx])
+       neg_sd_i = float(ema_sd(ema_neg_m1[idx], ema_neg_m2[idx]))
+       thr_ema_i = neg_mu_i + k_sigma * neg_sd_i
+
+       # positivo -> soglia TP robusta
+       pos_sd_i = float(ema_sd(ema_pos_m1[idx], ema_pos_m2[idx]))
+       tp_gate_i = max(
+           min_spikes_for_known * ema_factor,
+           rel * tp_gate_ratio,
+           ema_pos_m1[idx] - ema_factor * pos_sd_i
+       )
+       fp_gate_i = max(thr_ema_i, rel)
+
+       # safety clamp
+       if not np.isfinite(tp_gate_i): tp_gate_i = 0.0
+       if not np.isfinite(fp_gate_i): fp_gate_i = 0.0
+
+       tp_gate[idx] = tp_gate_i
+       fp_gate[idx] = fp_gate_i
 
     # selecting all the spiking winning neurons >= threshold_ratio
     sorted_idx = np.argsort(scores)[::-1]
-    top = scores[sorted_idx[0]]
+    top, second = scores[sorted_idx[0]], (scores[sorted_idx[1]] if len(sorted_idx) > 1 else 0.0)
     second = scores[sorted_idx[1]] if len(sorted_idx) > 1 else 0.0
     margin_ok = (second <= 0) or (top / (second + 1e-9) >= top2_margin_ratio)
     winners = []
-    if top >= min_spikes_for_known and margin_ok:
-        winners = [int(sorted_idx[0])]
+    if top >= min_spikes_for_known and second > 0 and (top / (second + 1e-9) >= top2_margin_ratio):
+        winners = [int(sorted_idx[0])] # only one dominant taste
     else:
         thr = threshold_ratio * mx
-        winners = [i for i,c in enumerate(scores) if c >= thr]
+        winners = [idx for idx,c in enumerate(scores) if c >= thr]
         if not winners:
-            winners = [int(np.argmax(scores))]
-    
+            winners = [int(np.argmax(scores))] # tastes > 1
+
     # total scores printing
     order = np.argsort(scores)
-    dbg = [(taste_map[i], int(scores[i])) for i in order[::-1]]
-    
+    dbg = [(taste_map[idx], int(scores[idx])) for idx in order[::-1]]
+
     # 4) 3-factors training reinforcement multi-label learning dopamine rewards for the winner neurons
-    rel = threshold_ratio * mx  # relative threshold to maximum trial
-    for i in range(num_tastes-1):
-        if i not in diag_idx:
-            continue
-        si = diag_idx[i]
-        spikes_i = float(diff_counts[i])
-        # dynamic derivate thresholds by negative EMAs
-        neg_mu_i = ema_neg_m1[i]
-        neg_sd_i = ema_sd(ema_neg_m1[i], ema_neg_m2[i])
-        thr_ema_i = neg_mu_i + k_sigma * neg_sd_i
+    # A4: DIAGONALE: premio TP, punizione FP robusti
+    for idx in range(num_tastes-1):
+       if idx not in diag_idx:
+          continue
+       si = diag_idx[idx]
+       spikes_i = float(diff_counts[idx])
 
-        # decision gates for reinforcement learning
-        pos_sd_i = ema_sd(ema_pos_m1[i], ema_pos_m2[i])
-        tp_gate = max(min_spikes_for_known * ema_factor,
-              rel * tp_gate_ratio,
-              ema_pos_m1[i] - ema_factor * pos_sd_i)
-        fp_gate = max(thr_ema_i, rel)
+       r = 0.0
+       if idx in true_ids:
+          # true positive robusto
+          if spikes_i >= tp_gate[idx]:
+            r = alpha
+       else:
+         # false positive robusto (dopo warm-up EMA)
+          if step > fp_gate_warmup_steps and spikes_i >= fp_gate[idx]:
+            r = -beta
 
-        # safety clamps to make the gates code bulletproof
-        if not np.isfinite(tp_gate): tp_gate = 0.0
-        if not np.isfinite(fp_gate): fp_gate = 0.0
+       if r != 0.0:
+          delta = r * float(S.elig[si])
+          if delta != 0.0:
+            S.w[si] = float(np.clip(S.w[si] + delta, 0, 1))
+          S.elig[si] = 0.0
 
-        r = 0.0
-        if i in true_ids:
-            # if there is several answer by the spikes, that neuron is rewarded
-            if spikes_i >= tp_gate:
-                r = alpha
-        else:
-            # punish all false positives
-            if step > fp_gate_warmup_steps and spikes_i >= fp_gate:
-                r = -beta
-        # otherwise 
-        if r != 0.0:
-            old_w = float(S.w[si])
-            delta = r * float(S.elig[si])
-            if delta != 0.0:
-                S.w[si] = float(np.clip(S.w[si] + delta, 0, 1))
-                if verbose_rewards and step % 10 == 0:
-                    print(f" Dopamine reward with Reinforcement Learning {'+' if r>0 else '-'} on {taste_map[i]}: spikes={spikes_i:.1f}, "
-                          f"thr_ema={thr_ema_i:.1f}, rel={rel:.1f}, Δw={delta:+.4f}, "
-                          f"w: {old_w:.3f}→{float(S.w[si]):.3f}")
-            S.elig[si] = 0.0
+    # A5: OFF-DIAGONALE: punisci p→q quando q è FP robusto
+    if use_offdiag_dopamine:
+        for p in true_ids:
+            for q in range(num_tastes-1):
+                if q == p:
+                   continue
+                # punisci solo se: EMA calde e q supera la soglia FP robusta
+                if step > fp_gate_warmup_steps and float(diff_counts[q]) >= fp_gate[q]:
+                   si = ij_to_si.get((p, q), None)
+                   if si is None:
+                      continue  # in "diagonal" questa sinapsi non esiste
+                   old_w = float(S.w[si])
+                   delta = -beta_offdiag * float(S.elig[si])
+                   if delta != 0.0:
+                      S.w[si] = float(np.clip(S.w[si] + delta, 0, 1))
+                      if verbose_rewards and step % 10 == 0:
+                          print(f"  offdiag - {taste_map[p]}→{taste_map[q]} | "
+                              f"spk_q={float(diff_counts[q]):.1f} fp_q={fp_gate[q]:.1f} "
+                              f"Δw={delta:+.4f}  w:{old_w:.3f}→{float(S.w[si]):.3f}")
+                   S.elig[si] = 0.0
 
     # safe clip on theta for homeostasis
     theta_min, theta_max = -12*b.mV, 12*b.mV
     taste_neurons.theta[:] = np.clip((taste_neurons.theta/b.mV), float(theta_min/b.mV), float(theta_max/b.mV)) * b.mV
+
+    # Column normalization (incoming synaptic scaling) — DOWNSCALE-ONLY
+    if use_col_norm and connectivity_mode == "dense" and (step % col_norm_every == 0):
+       w_all = np.asarray(S.w[:], dtype=float)
+       i_all = np.asarray(S.i[:], dtype=int)
+       j_all = np.asarray(S.j[:], dtype=int)
+
+       for jo in range(num_tastes - 1):  # escludi UNKNOWN
+          idx = np.where(j_all == jo)[0]
+          if idx.size == 0:
+             continue
+          col = w_all[idx]
+
+          # pavimento opzionale
+          if col_floor > 0.0:
+             col = np.maximum(col, col_floor)
+
+          # leggero bias al diagonale prima del norm
+          if diag_bias_gamma != 1.0:
+             dloc = np.where(i_all[idx] == jo)[0]
+             if dloc.size:
+                col[dloc[0]] *= float(diag_bias_gamma)
+
+          L1 = float(np.sum(col))
+          target = col_norm_target if col_norm_target is not None else L1
+
+         # SOLO DOWNscale: riduci solo se supera il target ***
+          if L1 > target and L1 > 1e-12:
+             scale = target / L1
+             col = np.clip(col * scale, 0.0, 1.0)
+             w_all[idx] = col
+
+       S.w[:] = w_all
 
     # light weight decay for all the weights to avoid constant saturation to w=1 -> TO REMOVE if homeostasis (in this problem HOMEOSTASIS is biologically better)
     '''if weight_decay > 0:
@@ -430,8 +521,8 @@ print("\nEnded TRAINING phase!")
 
 # computing per-class thresholds
 thr_per_class = np.zeros(num_tastes)
-for i in range(num_tastes-1):
-    neg = np.asarray(neg_counts[i], dtype=float)
+for idx in range(num_tastes-1):
+    neg = np.asarray(neg_counts[idx], dtype=float)
     if neg.size == 0:
         neg = np.array([0.0])
 
@@ -442,25 +533,25 @@ for i in range(num_tastes-1):
     thr_quant = float(np.quantile(neg, q_neg)) if np.isfinite(neg).any() else 0.0
 
     # negative EMA during online training
-    sd_ema = ema_sd(ema_neg_m1[i], ema_neg_m2[i])
-    thr_ema = ema_neg_m1[i] + k_sigma * sd_ema
+    sd_ema = ema_sd(ema_neg_m1[idx], ema_neg_m2[idx])
+    thr_ema = ema_neg_m1[idx] + k_sigma * sd_ema
 
     # hybrid: use max -> conservative against FP
     thr_i = max(float(min_spikes_for_known), thr_gauss, thr_quant, thr_ema)
-    thr_per_class[i] = thr_i
+    thr_per_class[idx] = thr_i
 
 print("Per-class thresholds (hybrid μ+kσ, quantile, EMA):",
-      {taste_map[i]: int(thr_per_class[i]) for i in range(num_tastes-1)})
+      {taste_map[idx]: int(thr_per_class[idx]) for idx in range(num_tastes-1)})
 
 # if test ≠ training
 # dur_scale = float(test_duration / training_duration)
 # thr_per_class[:unknown_id] *= dur_scale
 
 # DEBUG: printing pos and neg values for each class
-for i in [0,2,3]: # SWEET, SALTY, SOUR
-    print(taste_map[i],
-          "pos μ,σ=", np.mean(pos_counts[i]), np.std(pos_counts[i]),
-          "neg μ,σ=", np.mean(neg_counts[i]), np.std(neg_counts[i]))
+for idx in [0,2,3]: # SWEET, SALTY, SOUR
+    print(taste_map[idx],
+          "pos μ,σ=", np.mean(pos_counts[idx]), np.std(pos_counts[idx]),
+          "neg μ,σ=", np.mean(neg_counts[idx]), np.std(neg_counts[idx]))
 
 # printing scaled weights after training
 print(f"Target weights after training:")
@@ -487,8 +578,8 @@ taste_neurons.gi[:] = 0 * b.nS
 taste_neurons.s[:]  = 0
 taste_neurons.wfast[:] = 0 * b.mV
 pg_noise.rates = 0 * b.Hz # noise silenced test
-S.Apre[:] = 0; 
-S.Apost[:] = 0; 
+S.Apre[:] = 0;
+S.Apost[:] = 0;
 S.elig[:] = 0
 # Intrinsic homeostasis frozen
 taste_neurons.homeo_on = 0.0
@@ -497,6 +588,9 @@ th = th - np.mean(th) # centered
 theta_min, theta_max = -10*b.mV, 10*b.mV
 taste_neurons.theta[:] = np.clip(th, theta_min, theta_max)
 
+
+use_rel_gate_in_test = False   # in multi-label conviene disattivarlo
+rel_gate_ratio_test  = 0.25    # usalo solo se lo attivi
 # 12. TEST PHASE
 print("\nStarting TEST phase...")
 results = []
@@ -506,7 +600,7 @@ thr_per_class[:unknown_id] *= dur_scale
 min_spikes_for_known_test = max(3, int(min_spikes_for_known * dur_scale))
 print(f"[Decoder] dur_scale={dur_scale:.2f} -> min_spikes_for_known_test={min_spikes_for_known_test}")
 print("Scaled per-class thresholds:",
-      {taste_map[i]: int(thr_per_class[i]) for i in range(num_tastes-1)})
+      {taste_map[idxs]: int(thr_per_class[idxs]) for idxs in range(num_tastes-1)})
 recovery_between_trials = 100 * b.ms  # refractory recovery
 
 exact_hits = 0
@@ -532,37 +626,43 @@ for step, (_rates_vec, true_ids, label) in enumerate(test_stimuli, start=1):
     diff_counts = spike_mon.count[:] - prev_counts
     # maintaining EMA during test phase
     if decoder_adapt_on_test:
-        for i in range(num_tastes-1):
-            if i in true_ids:
-                ema_pos_m1[i], ema_pos_m2[i] = ema_update(ema_pos_m1[i], ema_pos_m2[i],
-                                                          float(diff_counts[i]), ema_lambda)
+        for idxs in range(num_tastes-1):
+            if idxs in true_ids:
+                ema_pos_m1[idxs], ema_pos_m2[idxs] = ema_update(ema_pos_m1[idxs], ema_pos_m2[idxs],
+                                                          float(diff_counts[idxs]), ema_lambda)
             else:
-                ema_neg_m1[i], ema_neg_m2[i] = ema_update(ema_neg_m1[i], ema_neg_m2[i],
-                                                          float(diff_counts[i]), ema_lambda)
+                ema_neg_m1[idxs], ema_neg_m2[idxs] = ema_update(ema_neg_m1[idxs], ema_neg_m2[idxs],
+                                                          float(diff_counts[idxs]), ema_lambda)
                 # rialza la soglia se il fondo (negativo) cresce
-                sd_ema = ema_sd(ema_neg_m1[i], ema_neg_m2[i])
-                thr_ema = ema_neg_m1[i] + k_sigma * sd_ema
-                thr_per_class[i] = max(thr_per_class[i], thr_ema)
+                sd_ema = ema_sd(ema_neg_m1[idxs], ema_neg_m2[idxs])
+                thr_ema = ema_neg_m1[idxs] + k_sigma * sd_ema
+                thr_per_class[idxs] = max(thr_per_class[idxs], thr_ema)
 
     # 3) take the winners using per-class thresholds
     scores = diff_counts.astype(float)
     scores[unknown_id] = -1e9
     mx = scores.max()
-    # # if spikes threshold is weak => UNKNOWN
+
     if mx < min_spikes_for_known_test:
-        winners = [unknown_id]
+       winners = [unknown_id]
     else:
-        rel = threshold_ratio * mx
-        winners = [i for i in range(num_tastes-1) if scores[i] >= max(thr_per_class[i], rel)]
-        if not winners and mx >= min_spikes_for_known_test:
-            winners = [int(np.argmax(scores))]
+       rel = rel_gate_ratio_test * mx
+       if use_rel_gate_in_test:
+          gate = lambda ik: (scores[ik] >= max(thr_per_class[ik], rel))
+       else:
+          # OR logico: passa se supera la soglia per-classe OPPURE la soglia relativa al top
+          gate = lambda ik: (scores[ik] >= thr_per_class[ik]) or (scores[ik] >= rel)
+
+       winners = [im for im in range(num_tastes-1) if gate(im)]
+       if not winners and mx >= min_spikes_for_known_test:
+          winners = [int(np.argmax(scores))]
 
     order = np.argsort(scores)
-    dbg = [(taste_map[i], int(scores[i])) for i in order[::-1]]
+    dbg = [(taste_map[idxs], int(scores[idxs])) for idxs in order[::-1]]
     print("\nTest scores:", dbg)
 
     # to make a confrontation: expected vs predicted values
-    expected  = [taste_map[i] for i in true_ids]
+    expected  = [taste_map[idxs] for idxs in true_ids]
     predicted = [taste_map[w] for w in winners]
     hit = set(winners) == set(true_ids)
 
@@ -591,9 +691,9 @@ print(f"\nTest accuracy (exact-set match): {ok}/{len(results)} = {ok/len(results
 
 # b. Jaccard class, recall, precision, f1-score
 label_to_id = {lbl: idx for idx, lbl in taste_map.items()}
-classes = [i for i in range(num_tastes) if i != unknown_id]
+classes = [idx for idx in range(num_tastes) if idx != unknown_id]
 # Class counters
-stats = {i: {'tp': 0, 'fp': 0, 'fn': 0} for i in classes}
+stats = {idx: {'tp': 0, 'fp': 0, 'fn': 0} for idx in classes}
 jaccard_per_case = []
 for _, exp_labels, pred_labels, _ in results:
     T = {label_to_id[lbl] for lbl in exp_labels if label_to_id[lbl] != unknown_id}
@@ -629,7 +729,7 @@ for c in classes:
     prec, rec, f1, iou = prf(tp, fp, fn)
     print(f"{taste_map[c]:>6s}: TP={tp:2d} FP={fp:2d} FN={fn:2d} | "
           f"P={fmt_pct(prec)} R={fmt_pct(rec)} F1={fmt_pct(f1)} IoU={fmt_pct(iou)}")
-    
+
 # Micro / Macro
 sum_tp = sum(d['tp'] for d in stats.values())
 sum_fp = sum(d['fp'] for d in stats.values())
