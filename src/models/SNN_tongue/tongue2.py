@@ -1,3 +1,4 @@
+
 # SNN with STDP + eligibility trace to simulate an artificial tongue
 # that continuously learns to recognize multiple tastes (always-on).
 
@@ -7,6 +8,12 @@ import matplotlib.pyplot as plt
 import sys
 import random
 import numpy as np
+import time
+
+# time functions for timing training and test phase
+def fmt_mmss(seconds: float) -> str:
+    m, s = divmod(int(max(0.0, seconds) + 0.5), 60)
+    return f"{m:02d}:{s:02d}"
 
 # seed for the random reproducibility
 random.seed(0)
@@ -92,7 +99,7 @@ taui                 = 10*b.ms
 # Size of conductance kick per spike (scaling)
 g_step_exc           = 3.5 * b.nS       # excitation from inputs
 g_step_bg            = 0.3 * b.nS       # tiny background excitation
-g_step_inh           = 1.5 * b.nS       # lateral inhibition strength
+g_step_inh           = 1.3 * b.nS       # lateral inhibition strength
 
 # Intrinsic homeostasis adapative threshold parameters
 target_rate          = 50 * b.Hz        # reference firing per neuron (tu 40-80 Hz rule)
@@ -300,8 +307,8 @@ for _ in range(n_repeats):
 
 # 9C: test set
 test_stimuli = [
-    (np.array([250,0,0,250,0,0,0,0]), [0,3], "TASTE: 'SWEET' + 'SOUR'"),
-    (np.array([250,0,250,0,0,0,0,0]), [0,2], "TASTE: 'SWEET' + 'SALTY'")
+    (np.array([250,0,0,250,0,250,0,0]), [0,3], "TASTE: 'SWEET' + 'SOUR'"),
+    (np.array([250,0,250,0,0,250,0,0]), [0,2], "TASTE: 'SWEET' + 'SALTY'")
 ]
 # total stimuli
 training_stimuli = pure_train + mixture_train
@@ -321,10 +328,9 @@ S.Apre[:]  = 0
 S.Apost[:] = 0
 S.elig[:]  = 0
 taste_neurons.v[:] = EL
-
+sim_t0 = time.perf_counter()
 step = 0
 total_steps = len(training_stimuli) # pure + mixture
-
 # stima del col_norm_target se serve
 if use_col_norm and connectivity_mode == "dense" and col_norm_target is None:
     # fan-in atteso: tutti i presinaptici eccetto UNKNOWN
@@ -338,15 +344,23 @@ if use_col_norm and connectivity_mode == "dense" and col_norm_target is None:
 
 for input_rates, true_ids, label in training_stimuli:
     step += 1
+    # progress bar + chrono + ETA
     frac   = step / total_steps
     filled = int(frac * progress_bar_len)
     bar    = '█'*filled + '░'*(progress_bar_len - filled)
+
+    elapsed = time.perf_counter() - sim_t0
+    eta = (elapsed/frac - elapsed) if frac > 0 else 0.0
+
     if len(true_ids) == 1:
-        reaction = taste_reactions[true_ids[0]]
-        msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} | {reaction}")
+       reaction = taste_reactions[true_ids[0]]
+       msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} | {reaction}"
+           f" | t={fmt_mmss(elapsed)} | ETA={fmt_mmss(eta)}")
     else:
-        msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} (mixture)")
-    sys.stdout.write(msg);
+       msg = (f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_steps} | {label} (mixture)"
+           f" | t={fmt_mmss(elapsed)} | ETA={fmt_mmss(eta)}")
+
+    sys.stdout.write(msg)
     sys.stdout.flush()
 
     # 1) training stimulus with masking on no target neurons
@@ -517,7 +531,7 @@ for input_rates, true_ids, label in training_stimuli:
     net.run(pause_duration)
     S.elig[:] = 0
 
-print("\nEnded TRAINING phase!")
+print(f"\nEnded TRAINING phase! (elapsed: {fmt_mmss(time.perf_counter()-sim_t0)})")
 
 # computing per-class thresholds
 thr_per_class = np.zeros(num_tastes)
@@ -594,6 +608,7 @@ rel_gate_ratio_test  = 0.25    # usalo solo se lo attivi
 # 12. TEST PHASE
 print("\nStarting TEST phase...")
 results = []
+test_t0 = time.perf_counter()  # start stopwatch TEST
 # Scale decoder thresholds to the test window
 dur_scale = float(test_duration / training_duration)
 thr_per_class[:unknown_id] *= dur_scale
@@ -610,11 +625,18 @@ for step, (_rates_vec, true_ids, label) in enumerate(test_stimuli, start=1):
     taste_neurons.ge[:] = 0 * b.nS
     taste_neurons.gi[:] = 0 * b.nS
     taste_neurons.wfast[:] = 0 * b.mV
-    # progress bar
+    # progress bar + chrono + ETA
     frac   = step / total_test
     filled = int(frac * progress_bar_len)
     bar    = '█'*filled + '░'*(progress_bar_len - filled)
-    sys.stdout.write(f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_test} | Testing → {label}")
+
+    elapsed = time.perf_counter() - test_t0
+    eta = (elapsed/frac - elapsed) if frac > 0 else 0.0
+
+    sys.stdout.write(
+      f"\r[{bar}] {int(frac*100)}% | Step {step}/{total_test} | Testing → {label}"
+      f" | t={fmt_mmss(elapsed)} | ETA={fmt_mmss(eta)}"
+    )
     sys.stdout.flush()
 
     # 1) stimulus on target classes
@@ -767,7 +789,7 @@ for k in range(num_tastes-1):
         si = diag_idx[k]
         print(f"  {taste_map[k]}→{taste_map[k]}: Δw = {float(S.w[si] - w_before_test[si]):+.4f}")
 
-print("\nEnded TEST phase successfully!")
+print(f"\nTEST phase done (elapsed: {fmt_mmss(time.perf_counter()-test_t0)})")
 
 # 13. Plots
 # a) Spikes over time
