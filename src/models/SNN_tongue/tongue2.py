@@ -284,7 +284,7 @@ Sj = np.array(S.j[:], dtype=int)
 for k in range(len(Si)):
     ij_to_si[(int(Si[k]), int(Sj[k]))] = int(k)
 
-# Available diagonal index in 'diagonal' and 'dense')
+# Available diagonal index in 'diagonal' and 'dense'
 diag_idx = {k: ij_to_si[(k, k)] for k in range(num_tastes-1) if (k, k) in ij_to_si}
 
 # Background synapses (ambient excitation)
