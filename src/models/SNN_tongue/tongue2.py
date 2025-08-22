@@ -74,14 +74,14 @@ num_tastes = 8  # SWEET, BITTER, SALTY, SOUR, UMAMI, FATTY, SPICY, UNKNOWN
 taste_labels = ["SWEET", "BITTER", "SALTY", "SOUR", "UMAMI",
                  "FATTY", "SPICY", "UNKNOWN"]
 taste_reactions = {
-    0: "Ouh... yummy!         ",
-    1: "So acid!              ",
-    2: "Need water... now!    ",
-    3: "Mehhh!                ",
-    4: "So delicious!         ",
+    0: "Ouh... yummy!",
+    1: "So acid!",
+    2: "Need water... now!",
+    3: "Mehhh!",
+    4: "So delicious!",
     5: "Oh, I'm a big fat boy!",
-    6: "I'm a blazing dragon! ",
-    7: "WTF!                  "
+    6: "I'm a blazing dragon!",
+    7: "WTF!"
 }
 # map from index to label
 taste_map = {idx: lbl for idx, lbl in enumerate(taste_labels)}
