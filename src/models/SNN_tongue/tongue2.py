@@ -10,6 +10,9 @@ import numpy as np
 import time
 import shutil
 
+# global base rate per every class -> not 500 in total to split among all the classes but 500 for everyone
+BASE_RATE_PER_CLASS = 500
+
 # time functions for timing training and test phase
 def fmt_mmss(seconds: float) -> str:
     m, s = divmod(int(max(0.0, seconds) + 0.5), 60)
@@ -117,7 +120,7 @@ taui                 = 10*b.ms
 # Size of conductance kick per spike (scaling)
 g_step_exc           = 3.5 * b.nS       # excitation from inputs
 g_step_bg            = 0.3 * b.nS       # tiny background excitation
-g_step_inh           = 1.3 * b.nS       # lateral inhibition strength
+g_step_inh_local     = 1.2 * b.nS       # lateral inhibition strength
 
 # Intrinsic homeostasis adapative threshold parameters
 target_rate          = 50 * b.Hz        # reference firing per neuron (tu 40-80 Hz rule)
@@ -132,7 +135,7 @@ q_neg                = 0.99             # negative quantile
 
 # Multi-label RL + EMA decoder
 ema_lambda            = 0.05            # 0 < λ ≤ 1
-tp_gate_ratio         = 0.50            # threshold to reward winner classes
+tp_gate_ratio         = 0.30            # threshold to reward winner classes
 fp_gate_warmup_steps  = 20              # delay punitions to loser classes if EMA didn't stabilize them yet
 decoder_adapt_on_test = False           # updating decoder EMA in test phase
 ema_factor            = 0.5             # EMA factor to punish more easy samples
@@ -281,7 +284,7 @@ Sj = np.array(S.j[:], dtype=int)
 for k in range(len(Si)):
     ij_to_si[(int(Si[k]), int(Sj[k]))] = int(k)
 
-# Available diagonal index in 'diagonal' che in 'dense')
+# Available diagonal index in 'diagonal' and 'dense')
 diag_idx = {k: ij_to_si[(k, k)] for k in range(num_tastes-1) if (k, k) in ij_to_si}
 
 # Background synapses (ambient excitation)
@@ -294,7 +297,7 @@ inhibitory_S = b.Synapses(taste_neurons,
                     taste_neurons,
                     on_pre='gi_post += g_step_inh',
                     delay=0.2*b.ms,
-                    namespace=dict(g_step_inh=g_step_inh))
+                    namespace=dict(g_step_inh=g_step_inh_local))
 inhibitory_S.connect('i != j')
 
 w_mon = b.StateMonitor(S, 'w', record=True)
@@ -364,13 +367,13 @@ taste_neurons.v[:] = EL
 sim_t0 = time.perf_counter()
 step = 0
 total_steps = len(training_stimuli) # pure + mixture
-# stima del col_norm_target se serve
+#  col_norm_target
 if use_col_norm and connectivity_mode == "dense" and col_norm_target is None:
-    # fan-in atteso: tutti i presinaptici eccetto UNKNOWN
+    # expected fan-in: all the pre-synaptics except for UNKNOWN
     fanin = (num_tastes - 1)
     init_mean = float(np.mean(S.w[:])) if len(S.w[:]) > 0 else 0.5
     col_norm_target = init_mean * fanin
-    # clamp del target
+    # target clamp
     col_norm_target = float(np.clip(col_norm_target, 0.5*fanin*0.2, 1.5*fanin*0.8))
     if verbose_rewards:
         print(f"col_norm_target auto={col_norm_target:.3f} (fanin={fanin}, init_mean={init_mean:.3f})")
@@ -399,7 +402,7 @@ for input_rates, true_ids, label in training_stimuli:
     # 1) training stimulus with masking on no target neurons
     masked = np.zeros_like(input_rates)
     masked[true_ids] = input_rates[true_ids]
-    set_stimulus_vect_norm(masked, total_rate=500)
+    set_stimulus_vect_norm(masked, total_rate=BASE_RATE_PER_CLASS * len(true_ids))
 
     # 2) spikes counting during trial
     prev_counts = spike_mon.count[:].copy()
@@ -637,7 +640,7 @@ theta_min, theta_max = -10*b.mV, 10*b.mV
 taste_neurons.theta[:] = np.clip(th, theta_min, theta_max)
 
 # to compute more mixtures
-inhibitory_S.namespace['g_step_inh'] = 0.7 * g_step_inh
+inhibitory_S.namespace['g_step_inh'] = 0.7 * g_step_inh_local
 inhibitory_S.delay = 0.5*b.ms
 use_rel_gate_in_test = False # in multi-label is better to deactivate
 rel_gate_ratio_test  = 0.15
@@ -676,7 +679,7 @@ for step, (_rates_vec, true_ids, label) in enumerate(test_stimuli, start=1):
     pbar_update(msg)
 
     # 1) stimulus on target classes
-    set_stimulus_vect_norm(_rates_vec, total_rate=500)
+    set_stimulus_vect_norm(_rates_vec, total_rate=BASE_RATE_PER_CLASS * len(true_ids))
 
     # 2) spikes counting during trial
     prev_counts = spike_mon.count[:].copy()
