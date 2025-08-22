@@ -143,13 +143,13 @@ beta_offdiag         = 0.5 * beta       # off-diag parameter
 use_offdiag_dopamine = True             # quick toggle
 
 # normalizzazione per-colonna (synaptic scaling in ingresso)
-use_col_norm         = True             # abilita la normalizzazione
-col_norm_mode        = "l1"             # "l1" (somma=target) oppure "softmax"
-col_norm_every       = 1                # esegui ogni N trial
-col_norm_temp        = 1.0              # temperatura softmax (se mode="softmax")
-col_norm_target      = None             # se None, lo stimiamo all’avvio training
-diag_bias_gamma      = 1.10             # >1.0 = leggero bias al peso diagonale prima del norm
-col_floor            = 0.0              # pavimento (0 o piccola epsilon) prima del norm
+use_col_norm         = True             # on the normalization
+col_norm_mode        = "l1"             # "l1" (sum=target) or "softmax"
+col_norm_every       = 1                # execute every N trial
+col_norm_temp        = 1.0              # temperature softmax (if mode="softmax")
+col_norm_target      = None             # if None, calculating the target at the beginning of the trial
+diag_bias_gamma      = 1.10             # >1.0 = light bias to the diagonal weight before normalization
+col_floor            = 0.0              # floor (0 or light epsilon) before norm
 
 # STDP parameters
 tau                  = 30 * b.ms        # STDP time constant
