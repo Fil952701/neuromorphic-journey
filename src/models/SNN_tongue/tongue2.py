@@ -425,7 +425,7 @@ for input_rates, true_ids, label in training_stimuli:
         net.run(pause_duration)
         continue
 
-    # A3: soglie TP/FP per ogni classe
+    # A3: TP/FP threshold for each class
     scores = diff_counts.astype(float)
     scores[unknown_id] = -1e9
     mx = scores.max()
@@ -435,12 +435,12 @@ for input_rates, true_ids, label in training_stimuli:
     fp_gate = np.zeros(num_tastes-1, dtype=float)
 
     for idx in range(num_tastes-1):
-       # fondo (negativo) -> soglia FP conservativa via EMA
+       # negative floor -> FP conservative threshold for EMA
        neg_mu_i = float(ema_neg_m1[idx])
        neg_sd_i = float(ema_sd(ema_neg_m1[idx], ema_neg_m2[idx]))
        thr_ema_i = neg_mu_i + k_sigma * neg_sd_i
 
-       # positivo -> soglia TP robusta
+       # positive -> strong TP threshold
        pos_sd_i = float(ema_sd(ema_pos_m1[idx], ema_pos_m2[idx]))
        tp_gate_i = max(
            min_spikes_for_known * ema_factor,
